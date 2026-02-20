@@ -9,7 +9,12 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@types/papaparse": "^5.5.2",
+    "@types/pdf-parse": "^1.1.5",
     "next": "16.1.6",
+    "papaparse": "^5.5.3",
+    "pdf-parse": "^1.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
