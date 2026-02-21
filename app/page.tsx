@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Papa from "papaparse";
 
-type FinancialData = { revenue: number | null; expenses: number | null; net_profit: number | null };
+type FinancialData = Record<string, number | null>;
 type ExtractedData = { currency: string | null; units: string | null; data: Record<string, FinancialData> };
 
 export default function Home() {
@@ -53,28 +53,60 @@ export default function Home() {
     }
   };
 
+  // Dynamically compute the columns (years) and rows (particulars) based on the actual result
+  const years = results ? Object.keys(results.data || {}).sort((a, b) => Number(b) - Number(a)) : [];
+
+  const allOrderedParticulars = (() => {
+    if (!results) return [];
+    const actualKeys = new Set<string>();
+    for (const year of years) {
+      Object.keys(results.data[year] || {}).forEach(k => actualKeys.add(k));
+    }
+    return Array.from(actualKeys);
+  })();
+
   const handleDownloadCsv = () => {
     if (!results) return;
 
-    const metadata = [
-      ["Currency", results.currency || "N/A"],
-      ["Units", results.units || "N/A"],
-      []
+    // Create the header row: ["", "Particulars", "FY 25", "FY 24", ...]
+    const headerRow = ["", "Particulars", ...years.map(y => `FY ${y.slice(-2)}`)];
+
+    // Construct the data rows matching the example format
+    const emptyTopRow = new Array(headerRow.length).fill("");
+    const csvDataArray: any[] = [
+      emptyTopRow, // Empty top row like in example
+      headerRow
     ];
 
-    const csvRows = Object.entries(results.data || {}).map(([year, financials]) => ({
-      Year: year,
-      Revenue: financials.revenue !== null ? financials.revenue : "N/A",
-      Expenses: financials.expenses !== null ? financials.expenses : "N/A",
-      "Net Profit": financials.net_profit !== null ? financials.net_profit : "N/A"
-    }));
+    for (const p of allOrderedParticulars) {
+      const row = ["", p];
+      let hasData = false;
+      for (const year of years) {
+        const val = results.data[year][p];
+        if (val !== undefined && val !== null) {
+          row.push(String(val));
+          hasData = true;
+        } else {
+          row.push("");
+        }
+      }
 
-    // Convert object to CSV format
-    const csvData = Papa.unparse(csvRows);
-    const csv = Papa.unparse(metadata) + "\\n" + csvData;
+      // Only add the row if there is at least one non-null value across all years
+      if (hasData) {
+        csvDataArray.push(row);
+      }
+    }
+
+    // Add metadata at the bottom
+    csvDataArray.push([]);
+    csvDataArray.push(["", "Metadata", "Value"]);
+    csvDataArray.push(["", "Currency", results.currency || "N/A"]);
+    csvDataArray.push(["", "Units", results.units || "N/A"]);
+
+    const csvData = Papa.unparse(csvDataArray);
 
     // Create a blob and download link
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
     link.setAttribute("href", url);
@@ -87,7 +119,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-50 flex items-center justify-center p-6 sm:p-12 font-sans selection:bg-indigo-100 selection:text-indigo-900">
-      <div className="max-w-xl w-full">
+      <div className={`w-full transition-all duration-500 ease-in-out ${results && !loading ? 'max-w-5xl' : 'max-w-xl'}`}>
         {/* Header Section */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center justify-center p-3 mb-5 bg-indigo-100 rounded-2xl shadow-sm">
@@ -181,21 +213,36 @@ export default function Home() {
                 <table className="min-w-full divide-y divide-slate-200">
                   <thead className="bg-slate-50">
                     <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Year</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Revenue</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Expenses</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Net Profit</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Particulars</th>
+                      {years.map(year => (
+                        <th key={year} className="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">{year}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-slate-200">
-                    {Object.entries(results.data || {}).map(([year, financials]) => (
-                      <tr key={year}>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">{year}</td>
-                        <td className={`px-6 py-4 whitespace-nowrap text-sm ${financials.revenue === null ? 'text-amber-500 font-semibold' : 'text-slate-600'}`}>{financials.revenue !== null ? financials.revenue : "N/A"}</td>
-                        <td className={`px-6 py-4 whitespace-nowrap text-sm ${financials.expenses === null ? 'text-amber-500 font-semibold' : 'text-slate-600'}`}>{financials.expenses !== null ? financials.expenses : "N/A"}</td>
-                        <td className={`px-6 py-4 whitespace-nowrap text-sm ${financials.net_profit === null ? 'text-amber-500 font-semibold' : 'text-slate-600'}`}>{financials.net_profit !== null ? financials.net_profit : "N/A"}</td>
-                      </tr>
-                    ))}
+                    {allOrderedParticulars.map(p => {
+                      // Check if there is data for this particular across all years before rendering
+                      const hasData = years.some(year => {
+                        const val = results.data[year]?.[p];
+                        return val !== undefined && val !== null;
+                      });
+
+                      if (!hasData) return null;
+
+                      return (
+                        <tr key={p} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-6 py-4 whitespace-normal min-w-[200px] max-w-[400px] text-sm font-medium text-slate-900">{p}</td>
+                          {years.map(year => {
+                            const val = results.data[year]?.[p];
+                            return (
+                              <td key={year} className="px-6 py-4 whitespace-nowrap text-right font-mono text-sm text-slate-600">
+                                {val !== undefined && val !== null ? val.toLocaleString() : "-"}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

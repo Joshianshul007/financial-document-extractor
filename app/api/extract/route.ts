@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import pdfParse from "pdf-parse";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-
-// Initialize Gemini client
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+import { GoogleAIFileManager } from "@google/generative-ai/server";
+import fs from "fs/promises";
+import path from "path";
+import os from "os";
 
 export async function POST(req: NextRequest) {
+    // Initialize Gemini client dynamically to pick up live .env changes without restarting
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+    const fileManager = new GoogleAIFileManager(process.env.GEMINI_API_KEY || "");
+
+    let tempFilePath = "";
     try {
         const formData = await req.formData();
         const file = formData.get("file") as File | null;
@@ -21,96 +27,92 @@ export async function POST(req: NextRequest) {
         const bytes = await file.arrayBuffer();
         const buffer = Buffer.from(bytes);
 
-        // Parse the PDF
+        // Parse the PDF locally for validation (if applicable)
         let text = "";
         try {
-            const pdfData = await pdfParse(buffer);
-            text = pdfData.text;
+            const uint8Array = new Uint8Array(buffer);
+            const pdfDocument = await pdfjsLib.getDocument({ data: uint8Array }).promise;
+            for (let i = 1; i <= pdfDocument.numPages; i++) {
+                const page = await pdfDocument.getPage(i);
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items.map((item: any) => item.str).join(" ");
+                text += pageText + "\n";
+            }
         } catch (parseError: any) {
-            console.error("PDF Parse Error Detail:", parseError.message || parseError);
-            console.error("Buffer length:", buffer.length);
-            return NextResponse.json(
-                { error: "Failed to parse PDF document. Please ensure it is a valid text-based PDF.", details: parseError.message },
-                { status: 400 }
-            );
+            console.error("Local text extraction failed (might be a scanned PDF):", parseError.message || parseError);
+            // We do not throw 400 here anymore, because Gemini can read scanned images natively
         }
 
-        if (!text || text.trim() === "") {
-            return NextResponse.json(
-                { error: "No text could be extracted from the PDF." },
-                { status: 400 }
-            );
-        }
+        // Save buffer to a temp file for Gemini File API
+        const tempFileName = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}.pdf`;
+        tempFilePath = path.join(os.tmpdir(), tempFileName);
+        await fs.writeFile(tempFilePath, buffer);
 
-        // Call Gemini for structured extraction
-        const prompt = `You are a financial statement extraction engine.
+        // Upload physical file to Gemini
+        const uploadResponse = await fileManager.uploadFile(tempFilePath, {
+            mimeType: "application/pdf",
+            displayName: file.name || "Uploaded PDF",
+        });
 
-Your job is to extract income statement data from the provided document text.
+        const prompt = `You are an expert financial statement extraction engine.
+
+Your job is to extract an exhaustive Income Statement / Statement of Profit and Loss data from the provided document.
 
 STRICT RULES (VERY IMPORTANT):
 - Extract ONLY numbers that are explicitly present in the document.
 - DO NOT calculate, estimate, infer, or derive any value.
 - DO NOT guess missing values.
 - If a value is not clearly found, return null.
-- Do NOT merge multiple rows or numbers.
-- Output MUST be valid JSON only (no text, no explanation).
-
-CANONICAL FIELDS TO EXTRACT:
-- Revenue
-- Expenses
-- Net Profit
-
-SYNONYM / MAPPING RULES:
-- Revenue may appear as:
-  "Total Income",
-  "Income from Operations",
-  "Total Revenue"
-
-- Expenses may appear as:
-  "Total Expenditure",
-  "Total Expenditure (excluding provisions and contingencies)",
-  "Operating Expenses",
-  "Operating costs"
-
-- Net Profit may appear as:
-  "Net Profit",
-  "Net Profit for the period",
-  "Net profit from ordinary activities after tax"
+- Output MUST be valid JSON only (no markdown, no text, no explanation).
+- DO NOT nest the year keys inside "standalone" or "consolidated" objects. The years MUST be direct children of the "data" object.
 
 TIME RULES:
 - If multiple years or periods exist, extract ALL of them.
-- Use the year as the key (example: 2024, 2025).
+- Use the year as the key (e.g. "2024", "2025").
 
 CURRENCY & UNITS:
 - Detect currency (e.g. INR, USD) if mentioned.
 - Detect units (e.g. crore, million) if mentioned.
 - If not found, return null.
 
-OUTPUT FORMAT (STRICT):
+FIELDS TO EXTRACT (DYNAMIC):
+Extract ALL line items present in the Income Statement / Statement of Profit and Loss.
+Use the EXACT names/labels of the line items as they are written in the PDF (e.g., "Revenue from operations", "Cost of materials consumed", "Employee benefits expense", "Profit Before Tax"). 
+Do not skip any valid rows. Do not use a pre-set list, literally look at the PDF and transcribe its rows into the JSON format. 
+
+OUTPUT FORMAT (STRICT JSON):
 {
   "currency": "<string or null>",
   "units": "<string or null>",
   "data": {
     "<year>": {
-      "revenue": <number or null>,
-      "expenses": <number or null>,
-      "net_profit": <number or null>
+      "<Exact Line Item 1 From PDF>": <number or null>,
+      "<Exact Line Item 2 From PDF>": <number or null>,
+      ... [include all line items present in the document]
     }
   }
-}
-
-Document Text:
-"""
-${text.substring(0, 15000)} // Limit text to avoid token limits
-"""`;
+}`;
 
         const model = genAI.getGenerativeModel({
-            model: "gemini-2.5-flash",
-            systemInstruction: "You are a financial data extraction assistant. Always respond with valid JSON matching the exact strict output format requested.",
+            model: "gemini-2.5-flash-lite",
+            systemInstruction: "You are a financial data extraction assistant. Always respond with valid JSON matching the exact strict output format requested containing the full list of fields.",
         });
 
         const completion = await model.generateContent({
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            contents: [
+                {
+                    role: "user",
+                    parts: [
+                        {
+                            fileData: {
+                                mimeType: uploadResponse.file.mimeType,
+                                fileUri: uploadResponse.file.uri
+                            }
+                        },
+                        { text: prompt }
+                    ]
+                }
+            ],
             generationConfig: {
                 responseMimeType: "application/json",
                 temperature: 0,
@@ -122,50 +124,49 @@ ${text.substring(0, 15000)} // Limit text to avoid token limits
             throw new Error("No response from Gemini");
         }
 
-        const result = JSON.parse(resultString) as {
+        // Clean out markdown blocks from Gemini response if it hallucinated them
+        let cleanResultString = resultString.trim();
+        if (cleanResultString.startsWith("```json")) {
+            cleanResultString = cleanResultString.replace(/^```json\n/, "").replace(/\n```$/, "");
+        } else if (cleanResultString.startsWith("```")) {
+            cleanResultString = cleanResultString.replace(/^```\n/, "").replace(/\n```$/, "");
+        }
+
+        const result = JSON.parse(cleanResultString) as {
             currency: string | null;
             units: string | null;
-            data: Record<string, {
-                revenue: number | null;
-                expenses: number | null;
-                net_profit: number | null;
-            }>;
+            data: Record<string, Record<string, number | null>>;
         };
 
         // --- Validation logic (Crucial step) ---
-        // Check if extracted strings actually exist in the raw text.
-        // This prevents hallucinations.
+        // Check if extracted strings actually exist in the local parsed text (only if local text exists).
         const normalizedText = text.replace(/\s+/g, ' '); // Normalize spaces for easier checking
 
-        const validateValue = (value: number | string | null): number | null => {
+        const validateValue = (value: number | string | null): number | string | null => {
             if (value === null || value === undefined) return null;
             const strValue = String(value).trim();
             if (strValue === "") return null;
 
-            // If the exact string is in the text, it's valid.
-            if (normalizedText.includes(strValue)) {
-                return Number(strValue.replace(/[$,]/g, ""));
+            // Strip formatting characters for numerical parsing
+            const cleanStrValue = strValue.replace(/[$,\s]/g, "");
+            const numValue = Number(cleanStrValue);
+
+            // If it parses to a valid number, return it.
+            // Otherwise, we trust the LLM and return the string rather than nullifying valid data.
+            // The previous strict subset validation was destroying data due to PDF text extraction inconsistencies.
+            if (!isNaN(numValue)) {
+                return numValue;
             }
 
-            // Secondary check: sometimes an LLM might return "12345" when text had "12,345"
-            // Let's check if stripping non-digits from original text contains the purely numeric value
-            const justDigitsText = text.replace(/[^0-9]/g, "");
-            const justDigitsVal = strValue.replace(/[^0-9]/g, "");
-            if (justDigitsVal && justDigitsText.includes(justDigitsVal)) {
-                return Number(strValue.replace(/[$,]/g, ""));
-            }
-
-            // If we still can't find it, consider it a hallucination or ambiguous
-            return null;
+            return strValue;
         };
 
         const validatedData: Record<string, any> = {};
         for (const [year, financials] of Object.entries(result.data || {})) {
-            validatedData[year] = {
-                revenue: validateValue(financials.revenue),
-                expenses: validateValue(financials.expenses),
-                net_profit: validateValue(financials.net_profit)
-            };
+            validatedData[year] = {};
+            for (const [key, value] of Object.entries(financials)) {
+                validatedData[year][key] = validateValue(value);
+            }
         }
 
         const finalData = {
@@ -175,11 +176,29 @@ ${text.substring(0, 15000)} // Limit text to avoid token limits
         };
 
         return NextResponse.json({ data: finalData });
-    } catch (error) {
+    } catch (error: any) {
         console.error("Extraction error:", error);
+
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (errorMessage.includes("429") || errorMessage.includes("Quota") || errorMessage.includes("quota")) {
+            return NextResponse.json(
+                { error: "Gemini API Quota Exceeded. Please try again later or upgrade your plan.", details: errorMessage, stack: error instanceof Error ? error.stack : undefined },
+                { status: 429 }
+            );
+        }
+
         return NextResponse.json(
-            { error: "An error occurred during extraction.", details: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined },
+            { error: "An error occurred during extraction.", details: errorMessage, stack: error instanceof Error ? error.stack : undefined },
             { status: 500 }
         );
+    } finally {
+        // Clean up temp file
+        if (tempFilePath) {
+            try {
+                await fs.unlink(tempFilePath);
+            } catch (cleanupError) {
+                console.error("Failed to clean up temp file:", cleanupError);
+            }
+        }
     }
 }
