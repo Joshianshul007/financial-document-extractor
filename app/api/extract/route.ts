@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GoogleAIFileManager } from "@google/generative-ai/server";
 import fs from "fs/promises";
@@ -31,7 +30,7 @@ export async function POST(req: NextRequest) {
         const contentType = req.headers.get("content-type") || "";
         let fileUri = "";
         let mimeType = "";
-        let text = ""; // For local validation (empty for direct uploads)
+        let text = ""; // For local validation, now unused but kept backcompat
 
         if (contentType.includes("application/json")) {
             const body = await req.json();
@@ -54,19 +53,6 @@ export async function POST(req: NextRequest) {
             // Convert File to Buffer
             const bytes = await file.arrayBuffer();
             const buffer = Buffer.from(bytes);
-
-            try {
-                const uint8Array = new Uint8Array(buffer);
-                const pdfDocument = await pdfjsLib.getDocument({ data: uint8Array }).promise;
-                for (let i = 1; i <= pdfDocument.numPages; i++) {
-                    const page = await pdfDocument.getPage(i);
-                    const textContent = await page.getTextContent();
-                    const pageText = textContent.items.map((item: any) => item.str).join(" ");
-                    text += pageText + "\n";
-                }
-            } catch (parseError: any) {
-                console.error("Local text extraction failed:", parseError.message || parseError);
-            }
 
             // Save buffer to a temp file for Gemini File API
             const tempFileName = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}.pdf`;
