@@ -1,36 +1,67 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Financial Document Extractor
 
-## Getting Started
+An enterprise-grade, Next.js application that leverages the power of the Google Gemini AI (2.5 Flash) to instantly process, extract, and format complex financial data from large business PDFs (Income Statements, Profit & Loss etc.) into structured, downloadable CSV formats.
 
-First, run the development server:
+## 🚀 Key Features
+- **Instant AI Extraction:** Uses `gemini-2.5-flash` to intelligently identify canonical financial fields (Revenue, EBITDA, Net Income, etc.) across multiple years.
+- **Large File Handling (~20MB+):** Engineered with a custom direct-to-Google browser upload pipeline, completely bypassing the Vercel 4.5MB Serverless Function payload limit.
+- **Dynamic Table Rendering:** Automatically generates flexible UI tables based on whatever years and data points the AI extracts from the uploaded document.
+- **CSV Export:** One-click download of the extracted financial structured data into a pristine CSV format.
+- **Edge Optimized:** Built with Next.js App Router and optimized for Vercel's global Serverless Edge Network with extended timeout configurations.
 
-```bash
+---
+
+## 🏗️ Architecture & Vercel Payload Bypass
+Typically, Vercel kills any `POST` request to an `/api/*` route that exceeds 4.5 MB with a `413 Payload Too Large` error. Because business PDFs can easily exceed 20 MB, this application utilizes a custom architecture:
+1. **Secure Key Exchange:** The frontend cleanly fetches the `GEMINI_API_KEY` from a securely isolated, force-dynamic Next.js route (`/api/env`).
+2. **Direct REST Upload:** The React client bypasses Vercel entirely, creating a raw HTTPS multiplex stream directly to `generativelanguage.googleapis.com` to safely transfer the 20MB file.
+3. **Lightweight Edge Trigger:** Google responds to the browser with a `<100 byte` URI string. The browser passes *only* this string to the Next.js `route.ts`. 
+4. **Serverless Extraction:** The Vercel Serverless Function (configured with `maxDuration: 60` and explicit CORS `OPTIONS` preflight headers) triggers the Gemini AI prompt natively using the URI.
+
+---
+
+## 💻 Tech Stack
+- **Framework:** [Next.js 14](https://nextjs.org/) (App Router, Serverless API Routes)
+- **Language:** TypeScript (.tsx, .ts)
+- **Styling:** Tailwind CSS (Modern Glassmorphism UI)
+- **AI Core:** Google Generative AI (`@google/generative-ai`)
+- **CSV Parsing:** PapaParse
+
+---
+
+## 🛠️ Local Development Setup
+
+### 1. Clone the repository
+\`\`\`bash
+git clone https://github.com/Joshianshul007/financial-document-extractor.git
+cd webapp
+\`\`\`
+
+### 2. Install Dependencies
+\`\`\`bash
+npm install
+\`\`\`
+
+### 3. Configure Environment Variables
+Create a `.env.local` file in the root of the `webapp` directory:
+\`\`\`env
+# You need an API Key from Google AI Studio
+GEMINI_API_KEY="AIzaSyYourGeneratedGeminiKeyHere..."
+\`\`\`
+
+### 4. Run the Development Server
+\`\`\`bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+\`\`\`
+Navigate to `http://localhost:3000` to view the application.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 🌐 Production Deployment (Vercel)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+This project is fully optimized for 1-click Vercel deployments.
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Push your code to GitHub.
+2. Import the repository in the Vercel Dashboard.
+3. **CRITICAL:** Under the **Environment Variables** section, add your `GEMINI_API_KEY`.
+4. Deploy! Next.js will automatically utilize the configured `maxDuration` and `force-dynamic` settings mapped in the codebase to prevent 504 Timeouts and 405 Method errors.
