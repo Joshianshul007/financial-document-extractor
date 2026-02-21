@@ -6,6 +6,9 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 
+// Allow the serverless function to run for up to 60 seconds (Vercel Hobby Tier Limit)
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
     // Initialize Gemini client dynamically to pick up live .env changes without restarting
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");

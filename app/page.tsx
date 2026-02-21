@@ -66,7 +66,14 @@ export default function Home() {
         })
       });
 
-      const data = await response.json();
+      let data;
+      const contentType = response.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        data = await response.json();
+      } else {
+        const textError = await response.text();
+        throw new Error(`Server returned a non-JSON error (Status ${response.status}). This might be a Vercel Timeout (504): ${textError.substring(0, 100)}`);
+      }
 
       if (!response.ok) {
         throw new Error(data.error || "Failed to extract data");
