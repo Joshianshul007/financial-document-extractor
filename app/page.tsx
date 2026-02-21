@@ -30,13 +30,40 @@ export default function Home() {
     setError(null);
     setResults(null);
 
-    const formData = new FormData();
-    formData.append("file", file);
-
     try {
+      // 1. Fetch API Key securely from local backend
+      const keyRes = await fetch("/api/env");
+      const { apiKey } = await keyRes.json();
+      if (!apiKey) throw new Error("API configuration missing. Check backend environment variables.");
+
+      // 2. Direct upload to Gemini REST API to bypass Vercel 4.5MB Serverless Limit
+      const uploadRes = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`, {
+        method: "POST",
+        headers: {
+          "X-Goog-Upload-Protocol": "raw",
+          "X-Goog-Upload-Command": "start, upload, finalize",
+          "X-Goog-Upload-Header-Content-Length": file.size.toString(),
+          "X-Goog-Upload-Header-Content-Type": file.type || "application/pdf",
+          "Content-Type": file.type || "application/pdf"
+        },
+        body: file
+      });
+
+      const uploadData = await uploadRes.json();
+      if (!uploadRes.ok) {
+        throw new Error(uploadData.error?.message || "Failed to upload file to Gemini directly");
+      }
+
+      // 3. Send the lightweight file URI reference to our Next.js backend for generative extraction
       const response = await fetch("/api/extract", {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          fileUri: uploadData.file.uri,
+          mimeType: uploadData.file.mimeType
+        })
       });
 
       const data = await response.json();

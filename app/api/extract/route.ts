@@ -13,46 +13,59 @@ export async function POST(req: NextRequest) {
 
     let tempFilePath = "";
     try {
-        const formData = await req.formData();
-        const file = formData.get("file") as File | null;
+        const contentType = req.headers.get("content-type") || "";
+        let fileUri = "";
+        let mimeType = "";
+        let text = ""; // For local validation (empty for direct uploads)
 
-        if (!file) {
-            return NextResponse.json(
-                { error: "No file uploaded" },
-                { status: 400 }
-            );
-        }
-
-        // Convert File to Buffer
-        const bytes = await file.arrayBuffer();
-        const buffer = Buffer.from(bytes);
-
-        // Parse the PDF locally for validation (if applicable)
-        let text = "";
-        try {
-            const uint8Array = new Uint8Array(buffer);
-            const pdfDocument = await pdfjsLib.getDocument({ data: uint8Array }).promise;
-            for (let i = 1; i <= pdfDocument.numPages; i++) {
-                const page = await pdfDocument.getPage(i);
-                const textContent = await page.getTextContent();
-                const pageText = textContent.items.map((item: any) => item.str).join(" ");
-                text += pageText + "\n";
+        if (contentType.includes("application/json")) {
+            const body = await req.json();
+            fileUri = body.fileUri;
+            mimeType = body.mimeType;
+            if (!fileUri || !mimeType) {
+                return NextResponse.json({ error: "Missing file credentials" }, { status: 400 });
             }
-        } catch (parseError: any) {
-            console.error("Local text extraction failed (might be a scanned PDF):", parseError.message || parseError);
-            // We do not throw 400 here anymore, because Gemini can read scanned images natively
+        } else {
+            const formData = await req.formData();
+            const file = formData.get("file") as File | null;
+
+            if (!file) {
+                return NextResponse.json(
+                    { error: "No file uploaded" },
+                    { status: 400 }
+                );
+            }
+
+            // Convert File to Buffer
+            const bytes = await file.arrayBuffer();
+            const buffer = Buffer.from(bytes);
+
+            try {
+                const uint8Array = new Uint8Array(buffer);
+                const pdfDocument = await pdfjsLib.getDocument({ data: uint8Array }).promise;
+                for (let i = 1; i <= pdfDocument.numPages; i++) {
+                    const page = await pdfDocument.getPage(i);
+                    const textContent = await page.getTextContent();
+                    const pageText = textContent.items.map((item: any) => item.str).join(" ");
+                    text += pageText + "\n";
+                }
+            } catch (parseError: any) {
+                console.error("Local text extraction failed:", parseError.message || parseError);
+            }
+
+            // Save buffer to a temp file for Gemini File API
+            const tempFileName = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}.pdf`;
+            tempFilePath = path.join(os.tmpdir(), tempFileName);
+            await fs.writeFile(tempFilePath, buffer);
+
+            // Upload physical file to Gemini
+            const uploadResponse = await fileManager.uploadFile(tempFilePath, {
+                mimeType: "application/pdf",
+                displayName: file.name || "Uploaded PDF",
+            });
+            fileUri = uploadResponse.file.uri;
+            mimeType = uploadResponse.file.mimeType;
         }
-
-        // Save buffer to a temp file for Gemini File API
-        const tempFileName = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}.pdf`;
-        tempFilePath = path.join(os.tmpdir(), tempFileName);
-        await fs.writeFile(tempFilePath, buffer);
-
-        // Upload physical file to Gemini
-        const uploadResponse = await fileManager.uploadFile(tempFilePath, {
-            mimeType: "application/pdf",
-            displayName: file.name || "Uploaded PDF",
-        });
 
         const prompt = `You are an expert financial statement extraction engine.
 
@@ -105,8 +118,8 @@ OUTPUT FORMAT (STRICT JSON):
                     parts: [
                         {
                             fileData: {
-                                mimeType: uploadResponse.file.mimeType,
-                                fileUri: uploadResponse.file.uri
+                                mimeType: mimeType,
+                                fileUri: fileUri
                             }
                         },
                         { text: prompt }
