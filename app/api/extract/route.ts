@@ -10,6 +10,17 @@ import os from "os";
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
+export async function OPTIONS(req: NextRequest) {
+    return NextResponse.json({}, {
+        status: 200,
+        headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        },
+    });
+}
+
 export async function POST(req: NextRequest) {
     // Initialize Gemini client dynamically to pick up live .env changes without restarting
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
